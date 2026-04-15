@@ -435,14 +435,34 @@ class Model(nn.Module):
     def train_model(self, X, max_steps, warmup_steps, hold_steps, X_val=None,
                     false_positive_val_data=None, positive_test_clips=None,
                     negative_weight_schedule=[1],
-                    val_steps=[250], lr=0.0001, val_set_hrs=1):
+                    val_steps=[250], lr=0.0001, val_set_hrs=1,
+                    gradient_accum_target: int = 128):
+        """Train the wake-word model.
+
+        Gradient accumulation note (fix for upstream issue #316): the original
+        upstream loop called ``optimizer.zero_grad()`` at the top of every
+        iteration and only called ``loss.backward()`` at the window boundary
+        (when ``accumulated_samples >= 128``). Consequence: intermediate-window
+        gradients were wiped before they could accumulate, so only the final
+        iteration in each window contributed to the parameter update — the
+        "accumulation" was dead code. This version zeros grads only at the
+        window boundary, calls backward every iteration (so gradients actually
+        accumulate in ``param.grad``), and scales each iteration's loss by
+        ``predictions.shape[0] / gradient_accum_target`` so the total
+        accumulated gradient approximates the mean loss over the whole window,
+        independent of how many iterations that window spans.
+        """
         # Move models and main class to target device
         self.to(self.device)
         self.model.to(self.device)
 
+        # Clear gradients once before the first accumulation window starts.
+        # They will be cleared again only when an accumulation window commits.
+        self.optimizer.zero_grad()
+
         # Train model
-        accumulation_steps = 1
         accumulated_samples = 0
+        accumulated_loss_sum = 0.0  # sum of per-iteration scaled losses, for logging
         accumulated_predictions = torch.Tensor([]).to(self.device)
         accumulated_labels = torch.Tensor([]).to(self.device)
         for step_ndx, data in tqdm(enumerate(X, 0), total=max_steps, desc="Training"):
@@ -454,9 +474,6 @@ class Model(nn.Module):
             for g in self.optimizer.param_groups:
                 g['lr'] = self.lr_warmup_cosine_decay(step_ndx, warmup_steps=warmup_steps, hold=hold_steps,
                                                       total_steps=max_steps, target_lr=lr)
-
-            # zero the parameter gradients
-            self.optimizer.zero_grad()
 
             # Get predictions for batch
             predictions = self.model(x)
@@ -482,31 +499,37 @@ class Model(nn.Module):
                     w = w[..., None]
 
             if predictions.shape[0] != 0:
-                # Do backpropagation, with gradient accumulation if the batch-size after selecting high loss examples is too small
+                # Compute loss and scale so that the accumulated gradient over
+                # a window ≈ the gradient of the mean loss on ``gradient_accum_target``
+                # samples. Scaling by (batch_size / target) means the sum of
+                # per-iteration scaled losses over a window of size ``target`` is
+                # approximately the mean loss. Without this, the effective
+                # learning rate would drift with accumulation-window length.
+                batch_size = predictions.shape[0]
                 loss = self.loss(predictions, y_ if self.n_classes == 1 else y, w.to(self.device))
-                loss = loss/accumulation_steps
-                accumulated_samples += predictions.shape[0]
+                scaled_loss = loss * (batch_size / gradient_accum_target)
+                scaled_loss.backward()
 
-                if predictions.shape[0] >= 128:
-                    accumulated_predictions = predictions
-                    accumulated_labels = y_
-                if accumulated_samples < 128:
-                    accumulation_steps += 1
-                    accumulated_predictions = torch.cat((accumulated_predictions, predictions))
-                    accumulated_labels = torch.cat((accumulated_labels, y_))
-                else:
-                    loss.backward()
+                accumulated_samples += batch_size
+                accumulated_loss_sum += scaled_loss.detach().item()
+                accumulated_predictions = torch.cat((accumulated_predictions, predictions))
+                accumulated_labels = torch.cat((accumulated_labels, y_))
+
+                if accumulated_samples >= gradient_accum_target:
+                    # Commit: apply accumulated gradients, then clear for the
+                    # next window.
                     self.optimizer.step()
-                    accumulation_steps = 1
-                    accumulated_samples = 0
+                    self.optimizer.zero_grad()
 
-                    self.history["loss"].append(loss.detach().cpu().numpy())
+                    self.history["loss"].append(accumulated_loss_sum)
 
-                    # Compute training metrics and log them
+                    # Compute training metrics and log them over the full window
                     fp = self.fp(accumulated_predictions, accumulated_labels if self.n_classes == 1 else y)
                     self.n_fp += fp
                     self.history["recall"].append(self.recall(accumulated_predictions, accumulated_labels).detach().cpu().numpy())
 
+                    accumulated_samples = 0
+                    accumulated_loss_sum = 0.0
                     accumulated_predictions = torch.Tensor([]).to(self.device)
                     accumulated_labels = torch.Tensor([]).to(self.device)
 
@@ -864,13 +887,21 @@ if __name__ == '__main__':
             def __iter__(self):
                 return self.generator
 
-        n_cpus = os.cpu_count()
-        if n_cpus is None:
-            n_cpus = 1
-        else:
-            n_cpus = n_cpus//2
+        # Single-worker data loading is a deliberate fix for upstream PR #202
+        # (oadams): ``mmap_batch_generator`` keeps a module-level ``data_counter``
+        # in each worker process — with ``num_workers=n_cpus, prefetch_factor=16``
+        # every worker independently replayed the first few batches from its own
+        # copy of the counter, so training saw each batch ``n_cpus`` times in
+        # a row instead of cycling through the dataset. On a 56-CPU machine
+        # that's 56× batch duplication and a correspondingly broken training
+        # signal.
+        #
+        # A proper multi-worker fix would require sharding the generator via
+        # ``torch.utils.data.get_worker_info`` inside ``IterDataset.__iter__``;
+        # that is a larger refactor and is left as a follow-up. In practice
+        # single-worker is fast enough because each batch is an mmap slice.
         X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),
-                                              batch_size=None, num_workers=n_cpus, prefetch_factor=16)
+                                              batch_size=None)
 
         X_val_fp = np.load(config["false_positive_validation_data_path"])
         X_val_fp = np.array([X_val_fp[i:i+input_shape[0]] for i in range(0, X_val_fp.shape[0]-input_shape[0], 1)])  # reshape to match model

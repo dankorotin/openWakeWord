@@ -52,7 +52,6 @@ train = [
     "pyyaml>=6.0",
     "mutagen>=1.47",
     "pronouncing>=0.2.0",
-    "acoustics>=0.2.6",
     "deep-phonemizer>=0.0.19",
 ]
 

@@ -22,7 +22,6 @@ from functools import partial
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
-import acoustics
 import audiomentations
 import mutagen
 import numpy as np
@@ -34,6 +33,55 @@ from numpy.lib.format import open_memmap
 from speechbrain.dataio.dataio import read_audio
 from speechbrain.processing.signal_processing import reverberate
 from tqdm import tqdm
+
+# ---------------------------------------------------------------------------
+# Colored-noise generator.
+#
+# Replaces the previous ``acoustics.generator.noise`` dependency. The
+# ``acoustics`` 0.2.6 package (last released 2022) pins to an old SciPy API
+# — in particular ``scipy.special.sph_harm``, which was removed in SciPy 1.15
+# (2025) and replaced by ``sph_harm_y``. Keeping it would force us to hold
+# scipy back below 1.15 in the [train] extra just to generate a 1 D array of
+# colored noise once per batch.
+#
+# This FFT-based implementation covers the five colors the augmentation
+# pipeline asks for (white, pink, blue, brown, violet) and matches the old
+# call site's contract: a 1 D float array of the requested length, scaled so
+# caller-side ``x / x.max()`` gives values in [-1, 1].
+# ---------------------------------------------------------------------------
+_COLOR_EXPONENTS: dict[str, float] = {
+    "white": 0.0,
+    "pink": -0.5,
+    "brown": -1.0,  # a.k.a. "red", 1/f^2 power spectrum
+    "blue": 0.5,
+    "violet": 1.0,
+}
+
+
+def _colored_noise(size: int, color: str = "white") -> np.ndarray:
+    """Generate 1 D colored noise of ``size`` samples.
+
+    Uses the standard FFT-shaping method: take white Gaussian noise, shape
+    its magnitude spectrum by ``f^exponent`` (where ``exponent`` depends on
+    color), and inverse-FFT back to the time domain. Phase is random.
+
+    Matches the five colors previously pulled from ``acoustics.generator.noise``.
+    """
+    if color not in _COLOR_EXPONENTS:
+        raise ValueError(f"Unsupported noise color {color!r}. Supported: {list(_COLOR_EXPONENTS)}.")
+
+    white = np.random.randn(size).astype(np.float64)
+    if color == "white":
+        return white
+
+    freqs = np.fft.rfftfreq(size)
+    # Avoid a divide-by-zero at DC when the exponent is negative. DC contributes
+    # only a constant offset and is normalised out by the caller's ``/x.max()``.
+    freqs = np.where(freqs == 0, 1.0, freqs)
+    spectrum = np.fft.rfft(white) * (freqs ** _COLOR_EXPONENTS[color])
+    return np.fft.irfft(spectrum, n=size)
+
+
 
 
 # Load audio clips and structure into clips of the same length
@@ -431,7 +479,7 @@ def mix_clips_batch(
 
             if np.random.random() < generated_noise_augmentation:
                 noise_color = ["white", "pink", "blue", "brown", "violet"]
-                noise_clip = acoustics.generator.noise(combined_size, color=np.random.choice(noise_color))
+                noise_clip = _colored_noise(combined_size, color=np.random.choice(noise_color))
                 noise_clip = torch.from_numpy(noise_clip/noise_clip.max())
                 mixed_clip = mix_clip(mixed_clip, noise_clip, np.random.choice(snrs_db), 0)
 

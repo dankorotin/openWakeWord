@@ -44,12 +44,45 @@ First release of the `dankorotin/openWakeWord` fork. Starts from upstream commit
 
 ### Known follow-ups (not in this release)
 
-* Gradient-accumulation bug in `train.py` (upstream issue #316) and the
-  data-loader batch-repeat bug (upstream PR #202) — will be fixed in a
-  dedicated commit with regression tests.
 * Bugbear (`B*`) lint sweep on the legacy files `data.py`, `train.py`,
   `model.py`, `utils.py`. Currently suppressed per-file to keep CI green
   without behaviour changes.
+* Proper multi-worker data loading in ``train.py`` (see the single-worker
+  comment at the ``DataLoader`` construction site) — needs an
+  ``IterDataset.__iter__`` that shards via ``torch.utils.data.get_worker_info``.
+
+## Unreleased — post-v0.7.0
+
+### Fixed
+
+* **Upstream issue #316** — gradient accumulation was dead code.
+  ``Model.train_model`` called ``optimizer.zero_grad()`` at the top of every
+  iteration and only called ``loss.backward()`` once the accumulated sample
+  count crossed the 128-sample target, so intermediate-window gradients
+  were silently wiped. Fixed by zeroing gradients only at the window
+  boundary, calling ``loss.backward()`` every iteration, and scaling each
+  iteration's loss by ``batch_size / gradient_accum_target`` so the
+  effective learning rate no longer drifts with the accumulation-window
+  length. Added ``tests/test_train_gradient_accumulation.py`` as a
+  regression gate.
+* **Upstream PR #202** — ``mmap_batch_generator``'s per-worker
+  ``data_counter`` caused each of ``num_workers=n_cpus`` DataLoader workers
+  to replay the same early batches. Training saw every batch ``n_cpus``
+  times in a row. Fixed by dropping to single-worker data loading (default
+  ``num_workers=0``); the inline comment documents the proper multi-worker
+  fix as a follow-up.
+* **SciPy 1.15+ incompatibility** — ``acoustics==0.2.6`` imports
+  ``scipy.special.sph_harm`` which was removed in SciPy 1.15 (replaced by
+  ``sph_harm_y``). The package was used exactly once, in data-augmentation
+  colored-noise generation. Replaced with an inline FFT-based
+  ``_colored_noise()`` helper (five colors: white/pink/blue/brown/violet)
+  and dropped the ``acoustics`` dependency from the ``[train]`` extra.
+
+### Changed
+
+* ``Model.train_model`` gained a ``gradient_accum_target`` keyword
+  (default 128) so the accumulation target can be tuned without editing
+  the source.
 
 ---
 
