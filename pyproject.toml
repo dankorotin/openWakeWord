@@ -1,30 +1,122 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[tool.pytest.ini_options]
-addopts = "--cov=openwakeword --cov-report term-missing --flake8 --mypy --mypy-ignore-missing-imports"
-flake8-max-line-length = "140"
-testpaths = [
-    "tests",
-    "openwakeword"
-]
 
 [project]
 name = "openwakeword"
-version = "0.6.0"
-authors = [
-  { name="David Scripka", email="david.scripka@gmail.com" },
-]
-description = "An open-source audio wake word (or phrase) detection framework with a focus on performance and simplicity"
+version = "0.7.0"
+description = "Open-source audio wake word detection — Python 3.13 fork with bug fixes and Silero VAD v6."
 readme = "README.md"
-requires-python = ">=3.10"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "David Scripka", email = "david.scripka@gmail.com" },
 ]
-dynamic = ["dependencies", "optional-dependencies"]
+maintainers = [
+    { name = "Dan Korotin", email = "korotin.daniil@gmail.com" },
+]
+keywords = ["wake-word", "wakeword", "voice", "speech", "onnx", "audio"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.26",
+    "onnxruntime>=1.19",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "tqdm>=4.66",
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+# Training stack: PyTorch-based, torch→ONNX export only.
+# (Upstream's 2022-era TensorFlow 2.8 pin is deliberately dropped.)
+train = [
+    "torch>=2.5",
+    "torchaudio>=2.5",
+    "torchmetrics>=1.4",
+    "torchinfo>=1.8",
+    "audiomentations>=0.37",
+    "torch-audiomentations>=0.11",
+    "speechbrain>=1.0",
+    "datasets>=3.0",
+    "onnx>=1.17",
+    "pyyaml>=6.0",
+    "mutagen>=1.47",
+    "pronouncing>=0.2.0",
+    "acoustics>=0.2.6",
+    "deep-phonemizer>=0.0.19",
+]
+
+# Optional TFLite inference backend. ONNX is the default; tflite is best-effort
+# kept for users with existing .tflite models.
+tflite = [
+    "ai-edge-litert>=2.0.2 ; platform_system == 'Linux' or platform_system == 'Darwin'",
+]
+
+# Optional SpeexDSP-based noise suppressor. Not on the default path; enable
+# explicitly via Model(enable_speex_noise_suppression=True).
+speex = [
+    "speexdsp-ns>=0.1.2 ; platform_system == 'Linux'",
+]
+
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "mypy>=1.13",
+    "types-requests",
+    "types-PyYAML",
+]
 
 [project.urls]
-"Homepage" = "https://github.com/dscripka/openWakeWord"
+Homepage = "https://github.com/dankorotin/openWakeWord"
+Repository = "https://github.com/dankorotin/openWakeWord"
+Upstream = "https://github.com/dscripka/openWakeWord"
+Issues = "https://github.com/dankorotin/openWakeWord/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["openwakeword*"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=openwakeword --cov-report=term-missing"
+testpaths = ["tests", "openwakeword"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = []
+
+# Legacy files inherited from upstream carry bugbear (``B``) footguns at
+# scale — mutable default arguments in signatures, unused loop variables,
+# ``zip`` without ``strict=``. Cleaning them up would change public API
+# surface and trainer behaviour; it is deliberately deferred to a follow-up
+# refactor pass. New code (``vad.py``, tests) stays strict.
+[tool.ruff.lint.per-file-ignores]
+"openwakeword/data.py" = ["B006", "B007", "B008", "B904", "B905"]
+"openwakeword/train.py" = ["B006", "B007", "B008", "B904", "B905"]
+"openwakeword/model.py" = ["B006", "B008", "B904", "B905"]
+"openwakeword/utils.py" = ["B006", "B007", "B008", "B904", "B905"]
+"openwakeword/custom_verifier_model.py" = ["B006", "B008"]
+"tests/test_models.py" = ["B007"]
+"tests/test_custom_verifier_model.py" = ["B007"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true

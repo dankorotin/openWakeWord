@@ -13,23 +13,23 @@
 # limitations under the License.
 
 # Imports
+import functools
+import logging
+import os
+import pickle
+import time
+import wave
+from collections import defaultdict, deque
+from functools import partial
+
 import numpy as np
+
 import openwakeword
 from openwakeword.utils import AudioFeatures, re_arg
 
-import wave
-import os
-import logging
-import functools
-import pickle
-from collections import deque, defaultdict
-from functools import partial
-import time
-from typing import List, Union, DefaultDict, Dict
-
 
 # Define main model class
-class Model():
+class Model:
     """
     The main model class for openWakeWord. Creates a model object with the shared audio pre-processer
     and for arbitrarily many custom wake word/wake phrase models.
@@ -37,13 +37,13 @@ class Model():
     @re_arg({"wakeword_model_paths": "wakeword_models"})  # temporary handling of keyword argument change
     def __init__(
             self,
-            wakeword_models: List[str] = [],
-            class_mapping_dicts: List[dict] = [],
+            wakeword_models: list[str] = [],
+            class_mapping_dicts: list[dict] = [],
             enable_speex_noise_suppression: bool = False,
             vad_threshold: float = 0,
             custom_verifier_models: dict = {},
             custom_verifier_threshold: float = 0.1,
-            inference_framework: str = "tflite",
+            inference_framework: str = "onnx",
             **kwargs
             ):
         """Initialize the openWakeWord model object.
@@ -74,10 +74,12 @@ class Model():
                                                from a model for a given frame is greater than this value, the
                                                associated custom verifier model will also predict on that frame, and
                                                the verifier score will be returned.
-            inference_framework (str): The inference framework to use when for model prediction. Options are
-                                       "tflite" or "onnx". The default is "tflite" as this results in better
-                                       efficiency on common platforms (x86, ARM64), but in some deployment
-                                       scenarios ONNX models may be preferable.
+            inference_framework (str): The inference framework to use for model prediction. Options are
+                                       "onnx" (default) or "tflite". Upstream defaulted to tflite on Linux for
+                                       latency, but this fork flips to onnx: it is the only universally-supported
+                                       backend on modern Python (3.13+), and requires no extra native wheels.
+                                       Pass "tflite" explicitly if you have the [tflite] extra installed and
+                                       .tflite models at hand.
             kwargs (dict): Any other keyword arguments to pass the the preprocessor instance
         """
         # Get model paths for pre-trained models if user doesn't provide models to load
@@ -94,7 +96,7 @@ class Model():
                     # Find pre-trained path by modelname
                     matching_model = [j for j in pretrained_model_paths if i.replace(" ", "_") in j.split(os.path.sep)[-1]]
                     if matching_model == []:
-                        raise ValueError("Could not find pretrained model for model name '{}'".format(i))
+                        raise ValueError(f"Could not find pretrained model for model name '{i}'")
                     else:
                         wakeword_models[ndx] = matching_model[0]
                         wakeword_model_names.append(i)
@@ -195,7 +197,7 @@ class Model():
                 )
 
         # Create buffer to store frame predictions
-        self.prediction_buffer: DefaultDict[str, deque] = defaultdict(partial(deque, maxlen=30))
+        self.prediction_buffer: defaultdict[str, deque] = defaultdict(partial(deque, maxlen=30))
 
         # Initialize SpeexDSP noise canceller
         if enable_speex_noise_suppression:
@@ -264,7 +266,7 @@ class Model():
 
         # Setup timing dict
         if timing:
-            timing_dict: Dict[str, Dict] = {}
+            timing_dict: dict[str, dict] = {}
             timing_dict["models"] = {}
             feature_start = time.time()
 
@@ -385,7 +387,7 @@ class Model():
         else:
             return predictions
 
-    def predict_clip(self, clip: Union[str, np.ndarray], padding: int = 1, chunk_size=1280, **kwargs):
+    def predict_clip(self, clip: str | np.ndarray, padding: int = 1, chunk_size=1280, **kwargs):
         """Predict on an full audio clip, simulating streaming prediction.
         The input clip must bit a 16-bit, 16 khz, single-channel WAV file.
 

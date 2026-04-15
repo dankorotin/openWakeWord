@@ -14,14 +14,13 @@
 
 # Imports
 import re
-from tqdm import tqdm
-import numpy as np
-from typing import List
 
+import numpy as np
+from tqdm import tqdm
 
 # Define metric utility functions specific to the wakeword detection use-case
 
-def get_false_positives(scores: List, threshold: float, grouping_window: int = 50):
+def get_false_positives(scores: list, threshold: float, grouping_window: int = 50):
     """
     Counts the number of false-positives based on a list of scores and a specified threshold.
 

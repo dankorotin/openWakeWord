@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Defer annotation evaluation so ``openwakeword.Model`` references in
+# function signatures below do not require ``Model`` to be bound on the
+# package at import time. Lets ``openwakeword/__init__.py`` use any import
+# order without circular-import fragility.
+from __future__ import annotations
+
 # Imports
 import collections
 import os
 import pickle
-from typing import List, Union
 
 import numpy as np
 import scipy
@@ -114,8 +119,8 @@ def train_verifier_model(features: np.ndarray, labels: np.ndarray):
 
 
 def train_custom_verifier(
-        positive_reference_clips: List[Union[str, os.PathLike]],
-        negative_reference_clips: List[Union[str, os.PathLike]],
+        positive_reference_clips: list[str | os.PathLike],
+        negative_reference_clips: list[str | os.PathLike],
         output_path: str,
         model_name: str,
         **kwargs

@@ -1,24 +1,25 @@
-import torch
-from torch import optim, nn
-import torchinfo
-import torchmetrics
+import argparse
+import collections
 import copy
+import logging
 import os
 import sys
 import tempfile
 import uuid
+from pathlib import Path
+
 import numpy as np
 import scipy
-import collections
-import argparse
-import logging
-from tqdm import tqdm
+import torch
+import torchinfo
+import torchmetrics
 import yaml
-from pathlib import Path
+from torch import nn, optim
+from tqdm import tqdm
+
 import openwakeword
-from openwakeword.data import generate_adversarial_texts, augment_clips, mmap_batch_generator
-from openwakeword.utils import compute_features_from_generator
-from openwakeword.utils import AudioFeatures
+from openwakeword.data import augment_clips, generate_adversarial_texts, mmap_batch_generator
+from openwakeword.utils import AudioFeatures, compute_features_from_generator
 
 
 # Base model class for an openwakeword model
@@ -575,8 +576,8 @@ def convert_onnx_to_tflite(onnx_model_path, output_path):
     """Converts an ONNX version of an openwakeword model to the Tensorflow tflite format."""
     # imports
     import onnx
-    from onnx_tf.backend import prepare
     import tensorflow as tf
+    from onnx_tf.backend import prepare
 
     # Convert to tflite from onnx model
     onnx_model = onnx.load(onnx_model_path)
@@ -639,7 +640,7 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-    config = yaml.load(open(args.training_config, 'r').read(), yaml.Loader)
+    config = yaml.load(open(args.training_config).read(), yaml.Loader)
 
     # imports Piper for synthetic sample generation
     sys.path.insert(0, os.path.abspath(config["piper_sample_generator_path"]))

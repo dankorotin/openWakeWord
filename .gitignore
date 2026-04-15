@@ -142,3 +142,9 @@ examples/
 
 # archive files
 archive/
+
+# Downloaded model resources (populated by openwakeword.utils.download_models)
+openwakeword/resources/
+
+# Local virtualenvs
+.venv/

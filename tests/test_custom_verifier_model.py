@@ -27,12 +27,14 @@
 
 
 # Imports
-import openwakeword
 import os
-import numpy as np
-import scipy.io.wavfile
 import tempfile
+
+import numpy as np
 import pytest
+import scipy.io.wavfile
+
+import openwakeword
 
 # Download models needed for tests
 openwakeword.utils.download_models(model_names=["alexa_v0.1", "hey_mycroft_v0.1"])
@@ -72,21 +74,21 @@ class TestModels:
                 positive_reference_clips=reference_clips,
                 negative_reference_clips=negative_clips,
                 output_path=os.path.join(tmp_dir, 'verifier_model.pkl'),
-                model_name=os.path.join("openwakeword", "resources", "models", "hey_mycroft_v0.1.tflite")
+                model_name=os.path.join("openwakeword", "resources", "models", "hey_mycroft_v0.1.onnx")
             )
 
             with pytest.raises(ValueError):
                 # Load model with verifier model incorrectly to catch ValueError
                 owwModel = openwakeword.Model(
                     wakeword_models=[os.path.join("openwakeword", "resources",
-                                     "models", "hey_mycroft_v0.1.tflite")],
+                                     "models", "hey_mycroft_v0.1.onnx")],
                     custom_verifier_models={"bad_key": os.path.join(tmp_dir, "verifier_model.pkl")},
                     custom_verifier_threshold=0.3,
                 )
 
             # Load model with verifier model incorrectly to catch ValueError
             owwModel = openwakeword.Model(
-                wakeword_models=[os.path.join("openwakeword", "resources", "models", "hey_mycroft_v0.1.tflite")],
+                wakeword_models=[os.path.join("openwakeword", "resources", "models", "hey_mycroft_v0.1.onnx")],
                 custom_verifier_models={"hey_mycroft_v0.1": os.path.join(tmp_dir, "verifier_model.pkl")},
                 custom_verifier_threshold=0.3,
             )

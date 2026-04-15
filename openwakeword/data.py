@@ -13,27 +13,27 @@
 # limitations under the License.
 
 # imports
-from multiprocessing.pool import ThreadPool
-import os
-import re
-import logging
-from functools import partial
-from pathlib import Path
-import random
-from tqdm import tqdm
-from typing import List, Tuple
-import numpy as np
 import itertools
+import logging
+import os
+import random
+import re
+from functools import partial
+from multiprocessing.pool import ThreadPool
+from pathlib import Path
+
+import acoustics
+import audiomentations
+import mutagen
+import numpy as np
 import pronouncing
 import torch
-import audiomentations
 import torch_audiomentations
+import torchaudio
 from numpy.lib.format import open_memmap
 from speechbrain.dataio.dataio import read_audio
 from speechbrain.processing.signal_processing import reverberate
-import torchaudio
-import mutagen
-import acoustics
+from tqdm import tqdm
 
 
 # Load audio clips and structure into clips of the same length
@@ -51,7 +51,7 @@ def stack_clips(audio_data, clip_size=16000*2):
     """
 
     # Combine all clips into single clip
-    combined_data = np.hstack((audio_data))
+    combined_data = np.hstack(audio_data)
 
     # Get chunks of the specified size
     new_examples = []
@@ -292,24 +292,24 @@ def get_wav_duration_from_filesize(size, nbytes=2):
 
 # Data augmentation utility function
 def mix_clips_batch(
-        foreground_clips: List[str],
-        background_clips: List[str],
+        foreground_clips: list[str],
+        background_clips: list[str],
         combined_size: int,
-        labels: List[int] = [],
+        labels: list[int] = [],
         batch_size: int = 32,
         snr_low: float = 0,
         snr_high: float = 0,
-        start_index: List[int] = [],
-        foreground_durations: List[float] = [],
+        start_index: list[int] = [],
+        foreground_durations: list[float] = [],
         foreground_truncate_strategy: str = "random",
-        rirs: List[str] = [],
+        rirs: list[str] = [],
         rir_probability: int = 1,
         volume_augmentation: bool = True,
         generated_noise_augmentation: float = 0.0,
         shuffle: bool = True,
         return_sequence_labels: bool = False,
         return_background_clips: bool = False,
-        return_background_clips_delay: Tuple[int, int] = (0, 0),
+        return_background_clips_delay: tuple[int, int] = (0, 0),
         seed: int = 0
         ):
     """
@@ -556,7 +556,7 @@ def apply_reverb(x, rir_files):
 
 # Alternate data augmentation method using audiomentations library (https://pypi.org/project/audiomentations/)
 def augment_clips(
-        clip_paths: List[str],
+        clip_paths: list[str],
         total_length: int,
         sr: int = 16000,
         batch_size: int = 128,
@@ -570,8 +570,8 @@ def augment_clips(
             "Gain": 1.0,
             "RIR": 0.5
         },
-        background_clip_paths: List[str] = [],
-        RIR_paths: List[str] = []
+        background_clip_paths: list[str] = [],
+        RIR_paths: list[str] = []
         ):
     """
     Applies audio augmentations to the specified audio clips, returning a generator that applies

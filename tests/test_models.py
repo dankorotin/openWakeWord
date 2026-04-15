@@ -27,19 +27,21 @@
 
 
 # Imports
-import openwakeword
-import os
-import sys
-import logging
-import numpy as np
-from pathlib import Path
 import collections
-import pytest
-import platform
+import logging
+import os
 import pickle
+import platform
+import sys
 import tempfile
-import mock
 import wave
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+import pytest
+
+import openwakeword
 
 # Download models needed for tests
 openwakeword.utils.download_models()
@@ -57,6 +59,9 @@ class TestModels:
         prediction = owwModel.predict(np.random.randint(-1000, 1000, 1280).astype(np.int16))
         assert prediction["alexa_v0.1"] >= 0 and prediction["alexa_v0.1"] <= 1
 
+        # tflite is an optional backend in this fork (install via the [tflite]
+        # extra). Skip this leg when ai_edge_litert isn't available.
+        pytest.importorskip("ai_edge_litert")
         owwModel = openwakeword.Model(wakeword_models=[
                                         os.path.join("openwakeword", "resources", "models", "alexa_v0.1.tflite")
                                       ], inference_framework="tflite")
@@ -106,6 +111,8 @@ class TestModels:
                                                 os.path.join("openwakeword", "resources", "models", "alexa_v0.1.onnx")
                                             ], inference_framework="onnx")
 
+        # tflite fallback path is only relevant when the [tflite] extra is installed.
+        pytest.importorskip("ai_edge_litert")
         with mock.patch.dict(sys.modules, {'tflite_runtime': None}):
             openwakeword.Model(wakeword_models=[
                                             os.path.join("openwakeword", "resources", "models", "alexa_v0.1.tflite")
@@ -131,9 +138,12 @@ class TestModels:
         # Load model with defaults
         owwModel = openwakeword.Model(wakeword_models=["alexa", "hey mycroft"], inference_framework="onnx")
 
-        owwModel = openwakeword.Model(wakeword_models=["alexa", "hey mycroft"], inference_framework="tflite")
+        # Prediction on random data (onnx leg)
+        owwModel.predict(np.random.randint(-1000, 1000, 1280).astype(np.int16))
 
-        # Prediction on random data
+        # tflite leg is optional — only runs when the [tflite] extra is installed.
+        pytest.importorskip("ai_edge_litert")
+        owwModel = openwakeword.Model(wakeword_models=["alexa", "hey mycroft"], inference_framework="tflite")
         owwModel.predict(np.random.randint(-1000, 1000, 1280).astype(np.int16))
 
     def test_custom_model_label_mapping_dict(self):

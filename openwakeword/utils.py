@@ -13,24 +13,26 @@
 # limitations under the License.
 
 # Imports
-import os
-import numpy as np
-import pathlib
-from collections import deque
-from multiprocessing.pool import ThreadPool
-from multiprocessing import Process, Queue
-import time
 import logging
-from tqdm import tqdm
-import openwakeword
-from numpy.lib.format import open_memmap
-from typing import Union, List, Callable, Deque
+import os
+import pathlib
+import time
+from collections import deque
+from collections.abc import Callable
+from multiprocessing import Process, Queue
+from multiprocessing.pool import ThreadPool
+
+import numpy as np
 import requests
+from numpy.lib.format import open_memmap
+from tqdm import tqdm
+
+import openwakeword
 
 
 # Base class for computing audio features using Google's speech_embedding
 # model (https://tfhub.dev/google/speech_embedding/1)
-class AudioFeatures():
+class AudioFeatures:
     """
     A class for creating audio features from audio data, including melspectograms and Google's
     `speech_embedding` features.
@@ -51,10 +53,9 @@ class AudioFeatures():
             embedding_model_path (str): The path to the model for Google's `speech_embedding` model
             sr (int): The sample rate of the audio (default: 16000 khz)
             ncpu (int): The number of CPUs to use when computing melspectrograms and audio features (default: 1)
-            inference_framework (str): The inference framework to use when for model prediction. Options are
-                                       "tflite" or "onnx". The default is "tflite" as this results in better
-                                       efficiency on common platforms (x86, ARM64), but in some deployment
-                                       scenarios ONNX models may be preferable.
+            inference_framework (str): The inference framework to use for model prediction. Options are
+                                       "onnx" (default) or "tflite". See ``openwakeword.model.Model`` for the
+                                       rationale behind defaulting to onnx in this fork.
             device (str): The device to use when running the models, either "cpu" or "gpu" (default is "cpu".)
                           Note that depending on the inference framework selected and system configuration,
                           this setting may not have an effect. For example, to use a GPU with the ONNX
@@ -161,7 +162,7 @@ class AudioFeatures():
             self.embedding_model_predict = tflite_embedding_predict
 
         # Create databuffers with empty/random data
-        self.raw_data_buffer: Deque = deque(maxlen=sr*10)
+        self.raw_data_buffer: deque = deque(maxlen=sr*10)
         self.melspectrogram_buffer = np.ones((76, 32))  # n_frames x num_features
         self.melspectrogram_max_len = 10*97  # 97 is the number of frames in 1 second of 16hz audio
         self.accumulated_samples = 0  # the samples added to the buffer since the audio preprocessor was last called
@@ -177,7 +178,7 @@ class AudioFeatures():
         self.raw_data_remainder = np.empty(0)
         self.feature_buffer = self._get_embeddings(np.random.randint(-1000, 1000, 16000*4).astype(np.int16))
 
-    def _get_melspectrogram(self, x: Union[np.ndarray, List], melspec_transform: Callable = lambda x: x/10 + 2):
+    def _get_melspectrogram(self, x: np.ndarray | list, melspec_transform: Callable = lambda x: x/10 + 2):
         """
         Function to compute the mel-spectrogram of the provided audio samples.
 
@@ -465,8 +466,8 @@ class AudioFeatures():
 
 # Bulk prediction function
 def bulk_predict(
-                 file_paths: List[str],
-                 wakeword_models: List[str],
+                 file_paths: list[str],
+                 wakeword_models: list[str],
                  prediction_function: str = 'predict_clip',
                  ncpu: int = 1,
                  inference_framework: str = "tflite",
@@ -623,7 +624,7 @@ def download_file(url, target_directory, file_size=None):
 
 # Function to download models from GitHub release assets
 def download_models(
-        model_names: List[str] = [],
+        model_names: list[str] = [],
         target_directory: str = os.path.join(pathlib.Path(__file__).parent.resolve(), "resources", "models")
         ):
     """
