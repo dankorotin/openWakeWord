@@ -4,6 +4,11 @@ import copy
 import logging
 import os
 import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 import tempfile
 import uuid
 from pathlib import Path
