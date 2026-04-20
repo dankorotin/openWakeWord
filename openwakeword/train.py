@@ -531,7 +531,17 @@ class Model(nn.Module):
                     # Compute training metrics and log them over the full window
                     fp = self.fp(accumulated_predictions, accumulated_labels if self.n_classes == 1 else y)
                     self.n_fp += fp
-                    self.history["recall"].append(self.recall(accumulated_predictions, accumulated_labels).detach().cpu().numpy())
+                    train_recall = self.recall(accumulated_predictions, accumulated_labels).detach().cpu().numpy()
+                    self.history["recall"].append(train_recall)
+
+                    # Log training metrics periodically (every 500 steps)
+                    if step_ndx % 500 == 0:
+                        logging.info(
+                            f"[train] step={step_ndx}/{max_steps}  "
+                            f"loss={accumulated_loss_sum:.4f}  "
+                            f"recall={train_recall:.4f}  "
+                            f"neg_weight={negative_weight_schedule[step_ndx] if negative_weight_schedule else 'N/A'}"
+                        )
 
                     accumulated_samples = 0
                     accumulated_loss_sum = 0.0
@@ -549,6 +559,7 @@ class Model(nn.Module):
                         val_fp += self.fp(val_predictions, y_val[..., None])
                 val_fp_per_hr = (val_fp/val_set_hrs).detach().cpu().numpy()
                 self.history["val_fp_per_hr"].append(val_fp_per_hr)
+                logging.info(f"[val-fp] step={step_ndx}  fp_per_hr={val_fp_per_hr:.4f}")
 
             # Get recall on test clips
             if step_ndx in val_steps and step_ndx > 1 and positive_test_clips is not None:
@@ -580,13 +591,23 @@ class Model(nn.Module):
                 self.history["val_accuracy"].append(val_acc.detach().cpu().numpy())
                 self.history["val_recall"].append(val_recall)
                 self.history["val_n_fp"].append(val_fp.detach().cpu().numpy())
+                logging.info(
+                    f"[val] step={step_ndx}  "
+                    f"accuracy={val_acc:.4f}  recall={val_recall:.4f}  "
+                    f"n_fp={val_fp.detach().cpu().numpy():.0f}"
+                )
 
             # Save models with a validation score above/below the 90th percentile
             # of the validation scores up to that point
             if step_ndx in val_steps and step_ndx > 1:
                 if self.history["val_n_fp"][-1] <= np.percentile(self.history["val_n_fp"], 50) and \
                    self.history["val_recall"][-1] >= np.percentile(self.history["val_recall"], 5):
-                    # logging.info("Saving checkpoint with metrics >= to targets!")
+                    logging.info(
+                        f"[checkpoint] step={step_ndx}  "
+                        f"recall={self.history['val_recall'][-1]:.4f}  "
+                        f"fp={self.history['val_n_fp'][-1]:.0f}  "
+                        f"total_saved={len(self.best_models)+1}"
+                    )
                     self.best_models.append(copy.deepcopy(self.model))
                     self.best_model_scores.append({"training_step_ndx": step_ndx, "val_n_fp": self.history["val_n_fp"][-1],
                                                    "val_recall": self.history["val_recall"][-1],
