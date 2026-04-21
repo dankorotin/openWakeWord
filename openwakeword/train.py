@@ -1,9 +1,13 @@
 import argparse
 import collections
 import copy
+import json
 import logging
 import os
 import sys
+import time
+from enum import Enum
+from typing import Optional
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,10 +31,25 @@ from openwakeword.data import augment_clips, generate_adversarial_texts, mmap_ba
 from openwakeword.utils import AudioFeatures, compute_features_from_generator
 
 
+class EventType(str, Enum):
+    """Training event names for TensorBoard + JSONL metric logging.
+
+    Values are the TB scalar prefix (e.g. ``train/loss``) and the JSONL
+    ``event`` field, so downstream tooling can filter records by type.
+    """
+
+    TRAIN = "train"
+    VAL_FP = "val_fp"
+    VAL = "val"
+    CHECKPOINT = "checkpoint"
+
+
 # Base model class for an openwakeword model
 class Model(nn.Module):
     def __init__(self, n_classes=1, input_shape=(16, 96), model_type="dnn",
-                 layer_dim=128, n_blocks=1, seconds_per_example=None):
+                 layer_dim=128, n_blocks=1, seconds_per_example=None,
+                 tensorboard_log_dir: Optional[str] = None,
+                 metrics_jsonl_path: Optional[str] = None):
         super().__init__()
 
         # Store inputs as attributes
@@ -139,6 +158,42 @@ class Model(nn.Module):
         # Define optimizer and loss
         self.loss = torch.nn.functional.binary_cross_entropy if n_classes == 1 else nn.functional.cross_entropy
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+
+        # Observability handles — both opt-in. ``SummaryWriter`` import is
+        # lazy so inference-only installs don't pick up tensorboard as a
+        # hard dependency via this module.
+        self.writer = None
+        if tensorboard_log_dir is not None:
+            from torch.utils.tensorboard import SummaryWriter
+            self.writer = SummaryWriter(log_dir=tensorboard_log_dir)
+        self.metrics_jsonl = None
+        if metrics_jsonl_path is not None:
+            self.metrics_jsonl = open(metrics_jsonl_path, "a", buffering=1)
+
+    def _log_metrics(self, event: EventType, step: int, **metrics) -> None:
+        """Emit one metric event to the TB writer and JSONL sidecar if configured.
+
+        Each metric lands in TB as ``{event.value}/{name}`` and as a field
+        on a single JSON object written to the JSONL file. Both destinations
+        are optional — the method no-ops silently when a handle is absent.
+        Callers must pass primitive-or-coercible-to-float values; tensors and
+        numpy scalars work because ``float(...)`` handles the ``.item()`` case.
+        """
+        if self.writer is not None:
+            for name, value in metrics.items():
+                self.writer.add_scalar(f"{event.value}/{name}", value, step)
+        if self.metrics_jsonl is not None:
+            record = {"step": int(step), "event": event.value, "ts": time.time(), **metrics}
+            self.metrics_jsonl.write(json.dumps(record, default=float) + "\n")
+
+    def close_training_handles(self) -> None:
+        """Flush and close the TB writer and JSONL sidecar. Idempotent."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+        if self.metrics_jsonl is not None:
+            self.metrics_jsonl.close()
+            self.metrics_jsonl = None
 
     def save_model(self, output_path):
         """
@@ -274,102 +329,107 @@ class Model(nn.Module):
         # Get false positive validation data duration
         val_set_hrs = 11.3
 
-        # Sequence 1
-        logging.info("#"*50 + "\nStarting training sequence 1...\n" + "#"*50)
-        lr = 0.0001
-        weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
-        val_steps = np.linspace(steps-int(steps*0.25), steps, 20).astype(np.int64)
-        self.train_model(
-                    X=X_train,
-                    X_val=X_val,
-                    false_positive_val_data=false_positive_val_data,
-                    max_steps=steps,
-                    negative_weight_schedule=weights,
-                    val_steps=val_steps, warmup_steps=steps//5,
-                    hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
+        # Guarantee ``close_training_handles`` runs even if a sequence raises,
+        # so TB event files and the JSONL sidecar get flushed on crash.
+        try:
+            # Sequence 1
+            logging.info("#"*50 + "\nStarting training sequence 1...\n" + "#"*50)
+            lr = 0.0001
+            weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
+            val_steps = np.linspace(steps-int(steps*0.25), steps, 20).astype(np.int64)
+            self.train_model(
+                        X=X_train,
+                        X_val=X_val,
+                        false_positive_val_data=false_positive_val_data,
+                        max_steps=steps,
+                        negative_weight_schedule=weights,
+                        val_steps=val_steps, warmup_steps=steps//5,
+                        hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
 
-        # Sequence 2
-        logging.info("#"*50 + "\nStarting training sequence 2...\n" + "#"*50)
-        lr = lr/10
-        steps = steps/10
+            # Sequence 2
+            logging.info("#"*50 + "\nStarting training sequence 2...\n" + "#"*50)
+            lr = lr/10
+            steps = steps/10
 
-        # Adjust weights as needed based on false positive per hour performance from first sequence
-        if self.best_val_fp > target_fp_per_hour:
-            max_negative_weight = max_negative_weight*2
-            logging.info("Increasing weight on negative examples to reduce false positives...")
+            # Adjust weights as needed based on false positive per hour performance from first sequence
+            if self.best_val_fp > target_fp_per_hour:
+                max_negative_weight = max_negative_weight*2
+                logging.info("Increasing weight on negative examples to reduce false positives...")
 
-        weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
-        val_steps = np.linspace(1, steps, 20).astype(np.int16)
-        self.train_model(
-                    X=X_train,
-                    X_val=X_val,
-                    false_positive_val_data=false_positive_val_data,
-                    max_steps=steps,
-                    negative_weight_schedule=weights,
-                    val_steps=val_steps, warmup_steps=steps//5,
-                    hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
+            weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
+            val_steps = np.linspace(1, steps, 20).astype(np.int16)
+            self.train_model(
+                        X=X_train,
+                        X_val=X_val,
+                        false_positive_val_data=false_positive_val_data,
+                        max_steps=steps,
+                        negative_weight_schedule=weights,
+                        val_steps=val_steps, warmup_steps=steps//5,
+                        hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
 
-        # Sequence 3
-        logging.info("#"*50 + "\nStarting training sequence 3...\n" + "#"*50)
-        lr = lr/10
+            # Sequence 3
+            logging.info("#"*50 + "\nStarting training sequence 3...\n" + "#"*50)
+            lr = lr/10
 
-        # Adjust weights as needed based on false positive per hour performance from second sequence
-        if self.best_val_fp > target_fp_per_hour:
-            max_negative_weight = max_negative_weight*2
-            logging.info("Increasing weight on negative examples to reduce false positives...")
+            # Adjust weights as needed based on false positive per hour performance from second sequence
+            if self.best_val_fp > target_fp_per_hour:
+                max_negative_weight = max_negative_weight*2
+                logging.info("Increasing weight on negative examples to reduce false positives...")
 
-        weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
-        val_steps = np.linspace(1, steps, 20).astype(np.int16)
-        self.train_model(
-                    X=X_train,
-                    X_val=X_val,
-                    false_positive_val_data=false_positive_val_data,
-                    max_steps=steps,
-                    negative_weight_schedule=weights,
-                    val_steps=val_steps, warmup_steps=steps//5,
-                    hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
+            weights = np.linspace(1, max_negative_weight, int(steps)).tolist()
+            val_steps = np.linspace(1, steps, 20).astype(np.int16)
+            self.train_model(
+                        X=X_train,
+                        X_val=X_val,
+                        false_positive_val_data=false_positive_val_data,
+                        max_steps=steps,
+                        negative_weight_schedule=weights,
+                        val_steps=val_steps, warmup_steps=steps//5,
+                        hold_steps=steps//3, lr=lr, val_set_hrs=val_set_hrs)
 
-        # Merge best models
-        logging.info("Merging checkpoints above the 90th percentile into single model...")
-        accuracy_percentile = np.percentile(self.history["val_accuracy"], 90)
-        recall_percentile = np.percentile(self.history["val_recall"], 90)
-        fp_percentile = np.percentile(self.history["val_fp_per_hr"], 10)
+            # Merge best models
+            logging.info("Merging checkpoints above the 90th percentile into single model...")
+            accuracy_percentile = np.percentile(self.history["val_accuracy"], 90)
+            recall_percentile = np.percentile(self.history["val_recall"], 90)
+            fp_percentile = np.percentile(self.history["val_fp_per_hr"], 10)
 
-        # Get models above the 90th percentile
-        models = []
-        for model, score in zip(self.best_models, self.best_model_scores):
-            if score["val_accuracy"] >= accuracy_percentile and \
-                    score["val_recall"] >= recall_percentile and \
-                    score["val_fp_per_hr"] <= fp_percentile:
-                models.append(model)
+            # Get models above the 90th percentile
+            models = []
+            for model, score in zip(self.best_models, self.best_model_scores):
+                if score["val_accuracy"] >= accuracy_percentile and \
+                        score["val_recall"] >= recall_percentile and \
+                        score["val_fp_per_hr"] <= fp_percentile:
+                    models.append(model)
 
-        if len(models) > 0:
-            combined_model = self.average_models(models=models)
-        else:
-            combined_model = self.model
+            if len(models) > 0:
+                combined_model = self.average_models(models=models)
+            else:
+                combined_model = self.model
 
-        # Report validation metrics for combined model
-        with torch.no_grad():
-            for batch in X_val:
-                x, y = batch[0].to(self.device), batch[1].to(self.device)
-                val_ps = combined_model(x)
+            # Report validation metrics for combined model
+            with torch.no_grad():
+                for batch in X_val:
+                    x, y = batch[0].to(self.device), batch[1].to(self.device)
+                    val_ps = combined_model(x)
 
-            combined_model_recall = self.recall(val_ps, y[..., None]).detach().cpu().numpy()
-            combined_model_accuracy = self.accuracy(val_ps, y[..., None].to(torch.int64)).detach().cpu().numpy()
+                combined_model_recall = self.recall(val_ps, y[..., None]).detach().cpu().numpy()
+                combined_model_accuracy = self.accuracy(val_ps, y[..., None].to(torch.int64)).detach().cpu().numpy()
 
-            combined_model_fp = 0
-            for batch in false_positive_val_data:
-                x_val, y_val = batch[0].to(self.device), batch[1].to(self.device)
-                val_ps = combined_model(x_val)
-                combined_model_fp += self.fp(val_ps, y_val[..., None])
+                combined_model_fp = 0
+                for batch in false_positive_val_data:
+                    x_val, y_val = batch[0].to(self.device), batch[1].to(self.device)
+                    val_ps = combined_model(x_val)
+                    combined_model_fp += self.fp(val_ps, y_val[..., None])
 
-            combined_model_fp_per_hr = (combined_model_fp/val_set_hrs).detach().cpu().numpy()
+                combined_model_fp_per_hr = (combined_model_fp/val_set_hrs).detach().cpu().numpy()
 
-        logging.info(f"\n################\nFinal Model Accuracy: {combined_model_accuracy}"
-                     f"\nFinal Model Recall: {combined_model_recall}\nFinal Model False Positives per Hour: {combined_model_fp_per_hr}"
-                     "\n################\n")
+            logging.info(f"\n################\nFinal Model Accuracy: {combined_model_accuracy}"
+                         f"\nFinal Model Recall: {combined_model_recall}\nFinal Model False Positives per Hour: {combined_model_fp_per_hr}"
+                         "\n################\n")
 
-        return combined_model
+            return combined_model
+        finally:
+            self.close_training_handles()
 
     def predict_on_features(self, features, model=None):
         """
@@ -542,6 +602,13 @@ class Model(nn.Module):
                             f"recall={train_recall:.4f}  "
                             f"neg_weight={negative_weight_schedule[step_ndx] if negative_weight_schedule else 'N/A'}"
                         )
+                        train_event: dict[str, float] = {
+                            "loss": accumulated_loss_sum,
+                            "recall": float(train_recall),
+                        }
+                        if negative_weight_schedule:
+                            train_event["negative_weight"] = float(negative_weight_schedule[step_ndx])
+                        self._log_metrics(EventType.TRAIN, step_ndx, **train_event)
 
                     accumulated_samples = 0
                     accumulated_loss_sum = 0.0
@@ -560,6 +627,7 @@ class Model(nn.Module):
                 val_fp_per_hr = (val_fp/val_set_hrs).detach().cpu().numpy()
                 self.history["val_fp_per_hr"].append(val_fp_per_hr)
                 logging.info(f"[val-fp] step={step_ndx}  fp_per_hr={val_fp_per_hr:.4f}")
+                self._log_metrics(EventType.VAL_FP, step_ndx, fp_per_hour=float(val_fp_per_hr))
 
             # Get recall on test clips
             if step_ndx in val_steps and step_ndx > 1 and positive_test_clips is not None:
@@ -596,6 +664,12 @@ class Model(nn.Module):
                     f"accuracy={val_acc:.4f}  recall={val_recall:.4f}  "
                     f"n_fp={val_fp.detach().cpu().numpy():.0f}"
                 )
+                self._log_metrics(
+                    EventType.VAL, step_ndx,
+                    accuracy=float(val_acc),
+                    recall=float(val_recall),
+                    n_fp=float(val_fp.detach().cpu().numpy()),
+                )
 
             # Save models with a validation score above/below the 90th percentile
             # of the validation scores up to that point
@@ -607,6 +681,12 @@ class Model(nn.Module):
                         f"recall={self.history['val_recall'][-1]:.4f}  "
                         f"fp={self.history['val_n_fp'][-1]:.0f}  "
                         f"total_saved={len(self.best_models)+1}"
+                    )
+                    self._log_metrics(
+                        EventType.CHECKPOINT, step_ndx,
+                        recall=float(self.history['val_recall'][-1]),
+                        fp=float(self.history['val_n_fp'][-1]),
+                        total_saved=len(self.best_models) + 1,
                     )
                     self.best_models.append(copy.deepcopy(self.model))
                     self.best_model_scores.append({"training_step_ndx": step_ndx, "val_n_fp": self.history["val_n_fp"][-1],
@@ -873,7 +953,9 @@ if __name__ == '__main__':
         input_shape = np.load(os.path.join(feature_save_dir, "positive_features_test.npy")).shape[1:]
 
         oww = Model(n_classes=1, input_shape=input_shape, model_type=config["model_type"],
-                    layer_dim=config["layer_size"], seconds_per_example=1280*input_shape[0]/16000)
+                    layer_dim=config["layer_size"], seconds_per_example=1280*input_shape[0]/16000,
+                    tensorboard_log_dir=config.get("tensorboard_log_dir"),
+                    metrics_jsonl_path=config.get("metrics_jsonl_path"))
 
         # Create data transform function for batch generation to handle differ clip lengths (todo: write tests for this)
         def f(x, n=input_shape[0]):
