@@ -1,5 +1,21 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+* **TensorBoard + `metrics.jsonl` logging** during training. `Model.__init__`
+  accepts optional `tensorboard_log_dir` and `metrics_jsonl_path`; when set,
+  the four existing metric-log sites (`[train]` every 500 steps, `[val-fp]`
+  / `[val]` / `[checkpoint]` at validation steps) also emit matching TB
+  scalars (`train/loss`, `train/recall`, `val/fp_per_hour`, `val/accuracy`,
+  `val/recall`, etc.) and one JSON object per event to the JSONL sidecar.
+  Both paths are opt-in — omit the config keys and behaviour is identical
+  to pre-patch. The CLI entry point surfaces both as top-level keys in the
+  training YAML. Handles flushed in `auto_train`'s `finally`, so partial
+  runs still leave inspectable output. (marvin #226)
+* `tensorboard>=2.18` added to the `[train]` install extra.
+
 ## v0.7.0 - 2026-04-15 — `dankorotin/openWakeWord` fork
 
 First release of the `dankorotin/openWakeWord` fork. Starts from upstream commit
